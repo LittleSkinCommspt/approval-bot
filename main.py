@@ -3,7 +3,7 @@ import os
 import re
 
 from graia.application import GraiaMiraiApplication, Session
-from graia.application.entry import MemberJoinRequestEvent
+from graia.application.entry import MemberJoinRequestEvent, MessageChain, Plain
 from graia.broadcast import Broadcast
 
 from chancechecker import chanceChecker
@@ -26,6 +26,7 @@ class qqGroup(object):
     '''QQ 群号'''
     main = 586146922  # 主用户群
     cafe = 651672723  # 咖啡馆
+    admins = 985317265  # 运营组
 
 
 workInGroups = [qqGroup.main, qqGroup.cafe]  # 在这些群内工作
@@ -66,8 +67,11 @@ async def command_test(app: GraiaMiraiApplication, event: MemberJoinRequestEvent
                 c.remove()
                 await event.accept()
             elif _status == 403:  # 手动操作
-                # TODO 发送到运营组群
-                pass
+                await app.sendGroupMessage(
+                    qqGroup.admins,
+                    MessageChain.create(
+                        [Plain(f'{_userQq} 试图加入 {event.groupName}，UID 为 {_uid}')])
+                )
             elif _status == 404:  # 找不到 UID
                 c.addOnce()
                 await event.reject(f'UID 不正确')
