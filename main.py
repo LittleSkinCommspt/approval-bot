@@ -1,10 +1,13 @@
 import asyncio
 import os
 import re
+from typing import Callable, Tuple
 
 from graia.application import GraiaMiraiApplication, Session
 from graia.application.entry import MemberJoinRequestEvent, MessageChain, Plain
 from graia.broadcast import Broadcast
+from graia.broadcast.builtin.decoraters import Depend
+from graia.broadcast.exceptions import ExecutionStop
 
 from chancechecker import chanceChecker
 from verifyuid import verifyQmailUid
@@ -32,52 +35,57 @@ class qqGroup(object):
 workInGroups = [qqGroup.main, qqGroup.cafe]  # 在这些群内工作
 
 
-@bcc.receiver(MemberJoinRequestEvent)
+def inGroups(*groupsList: Tuple[int]) -> Callable:
+    groups = list(groupsList)
+
+    def wrapper(event: MemberJoinRequestEvent) -> None:
+        if not event.groupId in groups:
+            raise ExecutionStop()
+    return Depend(wrapper)
+
+
+@bcc.receiver(MemberJoinRequestEvent, headless_decoraters=[inGroups(*workInGroups)])
 async def command_test(app: GraiaMiraiApplication, event: MemberJoinRequestEvent):
     app.logger.info(f'{event.supplicant} 试图加入 {event.groupName}')
-    # 判断是否为指定群组
-    currentGroup = event.groupId
-    if currentGroup in workInGroups:
-        _userQq = event.supplicant
-        c = chanceChecker(_userQq)
-        if not c.hasChance:
-            await event.reject('由于未正确填写 UID，你的入群机会已经耗尽')
-            return
-        # 是否已在其他群中
-        otherGroups = workInGroups
-        otherGroups.remove(currentGroup)
-        inOtherGroups: bool = False
-        for g in otherGroups:
-            if await app.getMember(group=g, member_id=_userQq):
-                inOtherGroups = True
-        if inOtherGroups:
+    _userQq = event.supplicant
+    c = chanceChecker(_userQq)
+    if not c.hasChance:
+        await event.reject('由于未正确填写 UID，你的入群机会已经耗尽')
+        return
+    # 是否已在其他群中
+    otherGroups = workInGroups
+    otherGroups.remove(event.groupId)  # 剩余的工作群组
+    inOtherGroups: bool = False
+    for g in otherGroups:
+        if await app.getMember(group=g, member_id=_userQq):
+            inOtherGroups = True
+    if inOtherGroups:  # 在其他工作群组中
+        c.remove()
+        await event.accept()
+        return
+    # 验证 QQ 与 UID
+    _requestMessage = event.message.strip()  # 除去首尾空格
+    _answer = re.search(r'答案：(.*)', _requestMessage)  # 正则匹配 UID
+    _uid = _answer.group(1)  # 取出 UID
+    if not _answer:
+        return
+    if _uid.isdigit:  # UID 中只填写了数字（有效）
+        _status = await verifyQmailUid(_userQq, int(_uid))  # 验证
+        if _status == 200:  # 成功
             c.remove()
             await event.accept()
-            return
-        # 验证 QQ 与 UID
-        _requestMessage = event.message.strip()  # 除去首尾空格
-        _answer = re.search(r'答案：(.*)', _requestMessage)  # 正则匹配 UID
-        _uid = _answer.group(1)  # 取出 UID
-        print(_uid)
-        if not _answer:
-            return
-        if _uid.isdigit:  # UID 中只填写了数字（有效）
-            _status = await verifyQmailUid(_userQq, _uid)  # 验证
-            if _status == 200:  # 成功
-                c.remove()
-                await event.accept()
-            elif _status == 403:  # 手动操作
-                await app.sendGroupMessage(
-                    qqGroup.admins,
-                    MessageChain.create(
-                        [Plain(f'{_userQq} 试图加入 {event.groupName}，UID 为 {_uid}')])
-                )
-            elif _status == 404:  # 找不到 UID
-                c.addOnce()
-                await event.reject(f'UID 不正确')
-        else:
+        elif _status == 403:  # 手动操作
+            await app.sendGroupMessage(
+                qqGroup.admins,
+                MessageChain.create(
+                    [Plain(f'{_userQq} 试图加入 {event.groupName}，UID 为 {_uid}')])
+            )
+        elif _status == 404:  # 找不到 UID
             c.addOnce()
-            await event.reject('UID 应为纯数字')
+            await event.reject(f'UID 不正确')
+    else:
+        c.addOnce()
+        await event.reject('UID 应为纯数字')
 
 
 if __name__ == '__main__':
